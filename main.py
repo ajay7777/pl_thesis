@@ -1,36 +1,20 @@
-from os import PathLike
 from typing import Dict
 from collections import OrderedDict
-from functools import partial
-import pathlib
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, SequentialSampler, RandomSampler
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping
 from datasets import Dataset
-from transformers import BertForSequenceClassification, BertTokenizer, AdamW
+from transformers import AdamW
 from sklearn.model_selection import train_test_split
-
-from util import CustomDataset, augment_train_phone_language_pairs, prep_data_pair
-
+from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
+from util import augment_train_phone_language_pairs, prep_data_pair
+from transformers import TrainingArguments
+import multiprocessing
 
 MAX_LEN = 256
 NUM_LABELS = 2
-
-
-def preprocess(tokenizer: BertTokenizer, x: Dict) -> Dict:
-    pass
-
-# def nonefilter(dataset):
-#     filtered = []
-#     for x in dataset:
-#         if x["string1"] is None:
-#             continue
-#         if x["string2"] is None:
-#             continue
-#         filtered.append(x)
-#     return lf.Dataset(filtered)
 
 
 def get_dataloader():
@@ -56,7 +40,7 @@ def get_dataloader():
     #train, val = train_test_split(train_data, test_size=0.3)
     batch_size = 8
 
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", do_lower_case=True)
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-multilingual-uncased", do_lower_case=True)
 
     traindataset = train_dataset.map(lambda e: tokenizer(text=e['content_1'],text_pair=e['content_2'], add_special_tokens=True, truncation=True, padding=True), batched=True)
     traindataset.set_format(type='torch', columns=['input_ids', 'token_type_ids', 'attention_mask', 'label'])
@@ -68,21 +52,24 @@ def get_dataloader():
     valdataset.set_format(type='torch', columns=['input_ids', 'token_type_ids', 'attention_mask', 'label'])
     # Create Trainset
     #train_set_custom = CustomDataset(train_encodings, train_data.label.tolist())
-
+    cpu_count = multiprocessing.cpu_count()
     train_dataloader = DataLoader(
             traindataset,
             sampler=RandomSampler(val_dataset),
-            batch_size=batch_size
+            batch_size=batch_size,
+            num_workers=cpu_count
             )
     val_dataloader = DataLoader(
             valdataset,
             sampler=SequentialSampler(val_dataset),
-            batch_size=batch_size
+            batch_size=batch_size,
+            num_workers=cpu_count
             )
     test_dataloader = DataLoader(
             testdataset,
             sampler=SequentialSampler(test_dataset),
-            batch_size=batch_size
+            batch_size=batch_size,
+            num_workers=cpu_count
             )
 
     return train_dataloader, val_dataloader, test_dataloader
@@ -92,8 +79,12 @@ class Model(pl.LightningModule):
 
     def __init__(self):
         super(Model, self).__init__()
-        model = BertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=NUM_LABELS,return_dict = False)
-        self.model = model
+        model = 'bert-base-multilingual-uncased'
+        model_config = AutoConfig.from_pretrained(model, num_labels=NUM_LABELS, return_dict = False)
+        transformer_model = AutoModelForSequenceClassification.from_pretrained(model, config=model_config)
+
+        #model = BertForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=NUM_LABELS,return_dict = False)
+        self.model = transformer_model
 
         train_dataloader, val_dataloader, test_dataloader = get_dataloader()
         self._train_dataloader = train_dataloader
@@ -234,10 +225,30 @@ if __name__ == "__main__":
             )
 
     trainer = pl.Trainer(
-            # gpus=1
+            #callbacks=[early_stop_callback],
+            gpus=1,
+            max_epochs =30,
+            precision=16
+            #auto_select_gpus = True
+
+            # fast_dev_run = True
             # early_stop_callback=early_stop_callback,
             )
-
+    # training_args = TrainingArguments(
+    #         output_dir=f'./model',
+    #         overwrite_output_dir=True,
+    #         num_train_epochs=25,
+    #         save_total_limit=1,
+    #         per_device_train_batch_size=16,
+    #         per_device_eval_batch_size=64,
+    #         gradient_accumulation_steps=1,
+    #         #warmup_steps=params.get('warmup_steps'),
+    #         weight_decay=0.01,
+    #         #evaluation_strategy="epoch",
+    #         #save_strategy = params.get('evaluation_strategy'),
+    #         #load_best_model_at_end=params.get('load_best_model_at_end'),
+    #         metric_for_best_model="f1"
+    #     )
     model = Model()
 
     trainer.fit(model)
